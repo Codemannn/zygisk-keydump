@@ -1,6 +1,5 @@
 /**
- * KeyDump: Pure C LD_PRELOAD hook to capture EVP_PKEY.
- * No C++ dependencies, minimal footprint.
+ * KeyDump v6: Debug logging to verify EVP_PKEY_sign interception.
  */
 #include <dlfcn.h>
 #include <stdio.h>
@@ -8,45 +7,40 @@
 #define TAG "KeyDump"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 
-static int (*real_sign)(void*, unsigned char*, size_t*, const unsigned char*, size_t) = NULL;
-static int (*real_i2d)(void*, unsigned char**) = NULL;
-static int saved = 0;
-
-static void* fdsym(const char* lib, const char* name) {
-    void* h = dlopen(lib, RTLD_NOLOAD|RTLD_NOW);
-    if (!h) return NULL;
-    return dlsym(h, name);
-}
-
-static void save_key(void* pk) {
-    if (!real_i2d) real_i2d = (int(*)(void*,unsigned char**))fdsym("libcrypto.so", "i2d_PrivateKey");
-    if (!real_i2d) return;
-    unsigned char* der = NULL;
-    int len = real_i2d(pk, &der);
-    LOGI("i2d=%d", len);
-    if (len <= 0 || !der) return;
-    FILE* f = fopen("/sdcard/private_key.der", "wb");
-    if (f) { fwrite(der, 1, len, f); fclose(f); }
-    f = fopen("/sdcard/private_key.hex", "w");
-    if (f) {
-        for (int i=0; i<len; i++) fprintf(f, "%02x", der[i]);
-        fclose(f);
-    }
-    saved = 1;
-}
-
 int EVP_PKEY_sign(void* ctx, unsigned char* sig, size_t* slen,
                   const unsigned char* tbs, size_t tbslen) {
-    if (!real_sign) real_sign = (int(*)(void*,unsigned char*,size_t*,const unsigned char*,size_t))fdsym("libcrypto.so", "EVP_PKEY_sign");
-    if (!real_sign) return -1;
-    if (!saved && ctx) {
-        void** p = (void**)ctx;
-        void* pk = p[5]; /* offset 0x28 */
-        if (pk) { LOGI("pkey=%p", pk); save_key(pk); }
+    static int (*real)(void*,unsigned char*,size_t*,const unsigned char*,size_t) = NULL;
+    static int calls = 0;
+    calls++;
+    if (calls == 1) LOGI("EVP_PKEY_sign FIRST CALL! ctx=%p", ctx);
+    if (!real) {
+        void* h = dlopen("libcrypto.so", RTLD_NOLOAD|RTLD_NOW);
+        LOGI("dlopen libcrypto=%p", h);
+        if (h) { real = dlsym(h, "EVP_PKEY_sign"); LOGI("dlsym real=%p", real); }
     }
-    return real_sign(ctx, sig, slen, tbs, tbslen);
+    if (!real) return -1;
+    int ret = real(ctx, sig, slen, tbs, tbslen);
+    if (calls == 1) {
+        LOGI("real EVP_PKEY_sign returned %d slen=%lu", ret, *slen);
+        void* pk = NULL;
+        void** p = (void**)ctx;
+        for (int i=4; i<=6; i++) { if (p[i]) { pk = p[i]; LOGI("pkey[%d]=%p", i, pk); } }
+        if (pk) {
+            int (*i2d)(void*,unsigned char**) = dlsym(h, "i2d_PrivateKey");
+            if (i2d) {
+                unsigned char* der = NULL;
+                int len = i2d(pk, &der);
+                LOGI("i2d=%d der=%p", len, der);
+                if (len > 0 && der) {
+                    FILE* f = fopen("/sdcard/private_key.der", "wb");
+                    if (f) { fwrite(der, 1, len, f); fclose(f); LOGI("KEY SAVED %d bytes", len); }
+                }
+            }
+        }
+    }
+    return ret;
 }
 
 __attribute__((constructor)) static void init(void) {
-    LOGI("=== KeyDump v5 (Pure C) loaded ===");
+    LOGI("=== KeyDump v6 (debug) loaded ===");
 }
