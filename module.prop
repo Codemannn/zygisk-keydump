@@ -1,0 +1,6 @@
+id=keydump
+name=SSL Key Dump
+version=v1.0
+versionCode=1
+author=KPL
+description=Dump EVP_PKEY private key from target app via Zygisk hook

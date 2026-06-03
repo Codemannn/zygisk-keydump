@@ -1,0 +1,46 @@
+=== KeyDump 编译和部署指南 ===
+
+步骤 1: 编译（二选一）
+
+方法 A: GitHub Actions（推荐，无需本地环境）
+  1. 把整个 zygisk_keydump 目录推到一个 GitHub 仓库
+  2. 进入 Actions 标签页，手动触发 workflow
+  3. 等 2 分钟，下载编译好的 libkeydump.so
+
+方法 B: 本地编译（需要 Android NDK）
+  export NDK=/path/to/android-ndk-r27c
+  cd zygisk_keydump
+  $NDK/ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=jni/Android.mk APP_ABI=arm64-v8a APP_PLATFORM=android-21
+  输出: libs/arm64-v8a/libkeydump.so
+
+步骤 2: 部署到手机
+
+  adb push libkeydump.so /data/local/tmp/
+  adb shell su -c "chmod 755 /data/local/tmp/libkeydump.so"
+  adb shell su -c "setprop wrap.com.yzj.kaipanh 'LD_PRELOAD=/data/local/tmp/libkeydump.so'"
+
+步骤 3: 启动 App 抓取私钥
+
+  adb shell monkey -p com.yzj.kaipanh 1
+  # App 启动后，EVP_PKEY_sign 被调用时
+  # 私钥会自动保存到 /sdcard/private_key.der 和 /sdcard/private_key.hex
+
+步骤 4: 检查结果
+
+  adb shell su -c "ls -la /sdcard/private_key.*"
+  adb shell su -c "cat /sdcard/private_key.hex"
+  # 把 hex 内容拷出来就是私钥的 DER 编码
+
+步骤 5: 转成 PEM 格式
+
+  xxd -r -p private_key.hex > private_key.der
+  openssl rsa -inform DER -in private_key.der -out private_key.pem
+  # 或者:
+  openssl ec -inform DER -in private_key.der -out private_key.pem
+
+=== 原理 ===
+
+libkeydump.so 通过 LD_PRELOAD 注入到 App 进程。
+它拦截 EVP_PKEY_sign() 调用，从 EVP_PKEY_CTX 中提取 EVP_PKEY 指针，
+然后调用 i2d_PrivateKey() 导出 PKCS#8 DER 格式的私钥。
+整个过程不修改 App 内存、不使用 ptrace，360 加固无法检测。
