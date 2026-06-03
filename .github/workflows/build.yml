@@ -1,21 +1,45 @@
-name: Build KeyDump ARM64
+name: Build KeyDump ARM64 + Patchelf libnetd_client
 on: [push, workflow_dispatch]
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Setup NDK
         run: |
           wget -q https://dl.google.com/android/repository/android-ndk-r27c-linux.zip
           unzip -q android-ndk-r27c-linux.zip
           echo "NDK=$PWD/android-ndk-r27c" >> $GITHUB_ENV
-      - name: Build ARM64
+
+      - name: Build libkeydump.so ARM64
         run: |
           $NDK/ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=jni/Android.mk APP_ABI=arm64-v8a APP_PLATFORM=android-21
           ls -la libs/arm64-v8a/
-      - name: Upload artifact
+
+      - name: Install patchelf
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq patchelf
+
+      - name: Patch libnetd_client.so with keydump dependency
+        run: |
+          patchelf --add-needed /system/lib64/libkeydump.so libnetd_client_orig.so
+          patchelf --print-needed libnetd_client_orig.so | grep keydump
+          mv libnetd_client_orig.so libnetd_client_patched.so
+
+      - name: Prepare Magisk module
+        run: |
+          mkdir -p magisk_module/system/lib64
+          cp libs/arm64-v8a/libkeydump.so magisk_module/system/lib64/
+          cp libnetd_client_patched.so magisk_module/system/lib64/
+          cp module.prop magisk_module/
+          echo "wrap.com.yzj.kaipanh=" > magisk_module/system.prop
+          cd magisk_module && zip -r ../keydump_magisk.zip . && cd ..
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: keydump-arm64
-          path: libs/arm64-v8a/libkeydump.so
+          name: keydump-files
+          path: |
+            libs/arm64-v8a/libkeydump.so
+            libnetd_client_patched.so
+            keydump_magisk.zip
